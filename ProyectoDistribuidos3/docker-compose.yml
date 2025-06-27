@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # --- SERVICIOS DE INFRAESTRUCTURA (Siempre corriendo) ---
+  mongo-storage:
+    image: mongo:6.0
+    container_name: mongo-storage
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.2
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.2
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    restart: unless-stopped
+
+  redis-cache:
+    image: redis:6.2-alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # --- SERVICIOS DE PROCESAMIENTO (Los ejecutaremos manualmente) ---
+  waze-scraper:
+    build: ./web_scraper
+    container_name: waze-scraper
+    depends_on:
+      mongo-storage:
+        condition: service_healthy
+
+  filtering-homogenization:
+    build: ./mongo_storage
+    container_name: filtering-homogenization-service
+    depends_on:
+      mongo-storage:
+        condition: service_healthy
+
+  mongo-to-elastic-importer:
+    build: ./mongo_to_elastic_importer
+    container_name: mongo-to-elastic-importer
+    depends_on:
+      mongo-storage:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - MONGO_HOST=mongo-storage
+      - MONGO_DB=waze_db
+      - MONGO_COLLECTION=eventos_homogeneizados
+      - ELASTIC_HOST=elasticsearch
+      - ELASTIC_INDEX=waze_events
+
+volumes:
+  mongo_data:
+  elastic_data:
